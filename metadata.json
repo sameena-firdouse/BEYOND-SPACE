@@ -1,0 +1,6 @@
+{
+  "name": "Beyond Space — Sky Explorer",
+  "description": "Explore real NASA SPHEREx astronomical observations across six infrared detectors using live NASA/IPAC IRSA SIA2 queries and real FITS image processing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
