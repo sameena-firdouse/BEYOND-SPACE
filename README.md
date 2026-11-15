@@ -108,7 +108,7 @@ collections, and the current archive release.
 🔭 The BEYOND SPACE solution
              NASA SPHEREx observations
                         │
-                        ▼
+                        ▼ 
               IRSA archive / SIA2 API
                         │
                         ▼
