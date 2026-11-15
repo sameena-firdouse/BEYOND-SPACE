@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import test from 'node:test';
 import {
   DETECTOR_IDS,
+  chronologicalSortObservations,
   mjdToIso,
   mjdToUtcDate,
   parseDeclination,
@@ -19,6 +21,11 @@ import {
   runSpaceComparison,
   skyToPixelTanSip,
 } from '../server/compare.ts';
+import {
+  exportTimelapseMp4,
+  getExportedVideoPath,
+  prepareCosmicTimelapse,
+} from '../server/timelapse.ts';
 
 test('RA validation accepts 0..360 decimal and HMS, rejects out of range', () => {
   assert.equal(parseRightAscension('156.093').value, 156.093);
@@ -287,3 +294,111 @@ test('Live IRSA SIA2 query + Space Comparison pipeline analyzes two real SPHEREx
     assert.ok(chg.supportingEvidence.length > 0);
   }
 });
+
+test('chronologicalSortObservations sorts oldest->newest by observation MJD and flags missing timestamps', () => {
+  const mk = (id: string, mjd: number | null, relDate: string): SpherexObservation => ({
+    id,
+    obsId: id,
+    obsPublisherDid: `ivo://irsa.ipac/spherex_qr3?obs/${id}`,
+    collection: 'spherex_qr3',
+    dataRelease: 'QR3',
+    processingVersion: 'v1',
+    detector: 'D3',
+    bandpassName: 'SPHEREx-D3',
+    ra: 156.093,
+    dec: -41.644,
+    tMinMjd: mjd,
+    tMaxMjd: mjd !== null ? mjd + 0.002 : null,
+    obsDateUtc: mjd !== null ? mjdToUtcDate(mjd) : null,
+    obsDateIso: mjd !== null ? mjdToIso(mjd) : null,
+    obsReleaseDate: relDate,
+    resolvingPower: 41,
+    targetName: null,
+    exptimeSec: 112.5,
+    wavelengthMinUm: 1.63,
+    wavelengthMaxUm: 2.42,
+    pixelScaleArcsec: 6.15,
+    fovDeg: 3.485,
+    accessUrl: 'https://irsa.ipac.caltech.edu/ibe/data/spherex/sample.fits',
+    fitsFilename: `${id}.fits`,
+    estSizeKb: 42000,
+    archiveSourceUrl: 'https://irsa.ipac.caltech.edu/SIA',
+  });
+
+  // Deliberately give newest observation an older release date to prove release dates are NEVER used
+  const obsNewest = mk('OBS_NEW', 61200.5, '2025-01-01');
+  const obsOldest = mk('OBS_OLD', 60900.1, '2026-09-01');
+  const obsMid = mk('OBS_MID', 61050.3, '2026-06-01');
+  const obsNoTs = mk('OBS_NO_TS', null, '2026-01-01');
+
+  const res = chronologicalSortObservations([obsNewest, obsNoTs, obsMid, obsOldest]);
+  assert.deepEqual(
+    res.sorted.map((o) => o.id),
+    ['OBS_OLD', 'OBS_MID', 'OBS_NEW']
+  );
+  assert.deepEqual(
+    res.missingTimestamps.map((o) => o.id),
+    ['OBS_NO_TS']
+  );
+});
+
+test('Cosmic Time-Lapse prepares WCS-aligned epochs, handles corrupt FITS gracefully, and renders real MP4 via FFmpeg', async () => {
+  const res = await searchSpherexArchive(156.093, -41.644, 0.05, [
+    'spherex_dr1',
+    'spherex_qr3',
+  ]);
+  const det = DETECTOR_IDS.find((d) => res.byDetector[d].length >= 3);
+  assert.ok(det, 'Expected at least one detector with >= 3 real exposures');
+
+  const pool = res.byDetector[det];
+  // Pick 3 chronologically distinct exposures (passed intentionally out-of-order!)
+  const picks = [pool[0], pool[pool.length - 1], pool[Math.floor(pool.length / 2)]];
+  // Inject a corrupt/invalid FITS URL exposure of the same detector to test error resilience
+  const badObs: SpherexObservation = {
+    ...picks[0],
+    id: `${picks[0].id}__corrupt_test`,
+    obsId: 'CORRUPT_TEST_EXPOSURE',
+    accessUrl: 'https://127.0.0.1:9/nonexistent-cutout.fits',
+  };
+
+  const prep = await prepareCosmicTimelapse({
+    observations: [...picks, badObs],
+    ra: 156.093,
+    dec: -41.644,
+    radiusDeg: 0.05,
+    sizeDeg: 0.12,
+    subtractZodi: true,
+    totalMatchingArchiveRecords: pool.length,
+  });
+
+  assert.equal(prep.frames.length, 3, 'Expected 3 valid WCS-aligned frames');
+  assert.equal(prep.skippedCorrupted.length, 1, 'Expected corrupt FITS frame to be skipped cleanly');
+  assert.equal(prep.skippedCorrupted[0].obsId, 'CORRUPT_TEST_EXPOSURE');
+  assert.equal(prep.pairs.length, 2, 'Expected 2 consecutive Space Comparison pair transitions');
+
+  // Verify chronological oldest -> newest MJD monotonicity
+  for (let i = 1; i < prep.frames.length; i++) {
+    assert.ok(
+      (prep.frames[i].epochMeta.mjdObs ?? 0) >= (prep.frames[i - 1].epochMeta.mjdObs ?? 0),
+      'Prepared time-lapse frames must be ordered oldest to newest'
+    );
+  }
+
+  // Export authentic H.264 MP4 with ambient audio enabled to verify FFmpeg muxing end-to-end
+  const exported = await exportTimelapseMp4(prep.timelapseId, {
+    title: 'Test Verification',
+    visualizationMode: 'smooth_crossfade',
+    aspectRatio: '16:9',
+    fps: 12,
+    frameDurationSec: 0.8,
+    transitionDurationSec: 0.4,
+    includeAmbientAudio: true,
+  });
+
+  assert.equal(exported.verifiedOnDisk, true);
+  assert.ok(exported.fileSizeBytes > 5000, 'Rendered MP4 file size must exceed 5 KB');
+  const diskInfo = getExportedVideoPath(exported.exportId);
+  assert.ok(diskInfo && fs.existsSync(diskInfo.path), 'MP4 file must exist on disk');
+  assert.equal(fs.statSync(diskInfo.path).size, exported.fileSizeBytes);
+});
+

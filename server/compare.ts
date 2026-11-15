@@ -46,14 +46,14 @@ export const SPHEREX_FLAGS = {
   HALO: 1 << 28,
 } as const;
 
-const HARD_BAD_MASK =
+export const HARD_BAD_MASK =
   SPHEREX_FLAGS.OVERFLOW |
   SPHEREX_FLAGS.SUR_ERROR |
   SPHEREX_FLAGS.NONFUNC |
   SPHEREX_FLAGS.MISSING_DATA |
   SPHEREX_FLAGS.NONLINEAR;
 
-const ARTIFACT_FLAG_MASK =
+export const ARTIFACT_FLAG_MASK =
   SPHEREX_FLAGS.TRANSIENT |
   SPHEREX_FLAGS.HOT |
   SPHEREX_FLAGS.COLD |
@@ -68,7 +68,7 @@ const ARTIFACT_FLAG_MASK =
   SPHEREX_FLAGS.SNOWBALL |
   SPHEREX_FLAGS.HALO;
 
-const SOFT_FLAG_MASK = SPHEREX_FLAGS.DICHROIC | SPHEREX_FLAGS.PHANMISS;
+export const SOFT_FLAG_MASK = SPHEREX_FLAGS.DICHROIC | SPHEREX_FLAGS.PHANMISS;
 
 interface SipCoeff {
   p: number;
@@ -270,7 +270,7 @@ function estimateBackground(pixels: Float32Array, flags: Int32Array | null): {
   return { median: med, sigma: madSigma, validCount: initialCount };
 }
 
-interface LoadedEpoch {
+export interface LoadedEpoch {
   obs: SpherexObservation;
   width: number;
   height: number;
@@ -283,7 +283,7 @@ interface LoadedEpoch {
   meta: EpochAnalysisMetadata;
 }
 
-async function loadEpochForComparison(
+export async function loadEpochForComparison(
   obs: SpherexObservation,
   searchRa: number,
   searchDec: number,
@@ -430,7 +430,7 @@ async function loadEpochForComparison(
   };
 }
 
-interface AlignedEpoch {
+export interface AlignedEpoch {
   epoch: LoadedEpoch;
   alignedFlux: Float32Array;
   alignedVariance: Float32Array;
@@ -438,8 +438,26 @@ interface AlignedEpoch {
   overlapCount: number;
 }
 
+/** Build uint8 quality mask (0=clean, 1=soft flag, 2=artifact flag, 3=hard bad/NaN) */
+export function buildEpochQualityMask(flux: Float32Array, flags: Int32Array): Uint8Array {
+  const mask = new Uint8Array(flux.length);
+  for (let i = 0; i < flux.length; i++) {
+    const flg = flags[i];
+    if (!Number.isFinite(flux[i]) || (flg & HARD_BAD_MASK) !== 0) {
+      mask[i] = 3;
+    } else if ((flg & ARTIFACT_FLAG_MASK) !== 0) {
+      mask[i] = 2;
+    } else if ((flg & SOFT_FLAG_MASK) !== 0) {
+      mask[i] = 1;
+    } else {
+      mask[i] = 0;
+    }
+  }
+  return mask;
+}
+
 /** Reproject target epoch onto reference epoch WCS tangent-plane grid using bilinear interpolation */
-function alignEpochToReference(ref: LoadedEpoch, target: LoadedEpoch): AlignedEpoch {
+export function alignEpochToReference(ref: LoadedEpoch, target: LoadedEpoch): AlignedEpoch {
   const len = ref.width * ref.height;
   const alignedFlux = new Float32Array(len);
   const alignedVariance = new Float32Array(len);
@@ -662,205 +680,157 @@ function snrToStatisticalSupportPct(snr: number): number {
   return Math.round(Math.min(97, Math.max(20, pct)));
 }
 
-export async function runSpaceComparison(options: {
-  observations: SpherexObservation[];
-  ra: number;
-  dec: number;
-  sizeDeg?: number;
-  subtractZodi?: boolean;
-}): Promise<SpaceComparisonResult> {
-  const { observations, ra, dec } = options;
-  const sizeDeg = Math.min(Math.max(options.sizeDeg ?? 0.16, 0.08), 0.35);
-  const subtractZodi = options.subtractZodi ?? true;
+export interface AlignedEpochView {
+  obs: SpherexObservation;
+  meta: EpochAnalysisMetadata;
+  flux: Float32Array;
+  variance: Float32Array;
+  flags: Int32Array;
+}
 
-  const compatibility = validateComparisonCompatibility(observations, ra, dec);
-  if (!compatibility.compatible) {
-    throw new Error(compatibility.reasons.join(' '));
-  }
+export interface AnalyzedAlignedPair {
+  diff: Float32Array;
+  snr: Float32Array;
+  qualityMask: Uint8Array;
+  summary: ComparisonPairSummary;
+}
 
-  // Sort chronologically oldest -> newest so Reference = earliest epoch, Target = later epochs
-  const orderedObs = [...observations].sort(
-    (a, b) => (a.tMinMjd ?? 0) - (b.tMinMjd ?? 0)
-  );
-
-  // 1. Load & preprocess all selected FITS cutouts
-  const loadedEpochs: LoadedEpoch[] = [];
-  for (const obs of orderedObs) {
-    loadedEpochs.push(await loadEpochForComparison(obs, ra, dec, sizeDeg, subtractZodi));
-  }
-
-  const refEpoch = loadedEpochs[0];
-  const primaryTargetRaw = loadedEpochs[loadedEpochs.length - 1];
-  const width = refEpoch.width;
-  const height = refEpoch.height;
+/**
+ * Compute aligned difference map (target - baseline), propagated Z-score significance map,
+ * quality mask, and summary metrics for any two epochs already sharing a common WCS pixel grid.
+ */
+export function analyzeAlignedPair(
+  baseline: AlignedEpochView,
+  target: AlignedEpochView,
+  width: number,
+  height: number
+): AnalyzedAlignedPair {
   const len = width * height;
+  const diff = new Float32Array(len);
+  const snr = new Float32Array(len);
+  const qualityMask = new Uint8Array(len);
+  diff.fill(Number.NaN);
+  snr.fill(Number.NaN);
 
-  // 2. Align all subsequent epochs onto Reference Epoch's TAN-SIP WCS grid
-  const alignedTargets: AlignedEpoch[] = [];
-  for (let i = 1; i < loadedEpochs.length; i++) {
-    alignedTargets.push(alignEpochToReference(refEpoch, loadedEpochs[i]));
-  }
+  const wcsShift = measureResidualShift(baseline.flux, target.flux, width, height);
+  const wcsShiftArcsec = Number((wcsShift.magnitude * 6.15).toFixed(2));
 
-  const primaryAligned = alignedTargets[alignedTargets.length - 1];
-  const dataQualityWarnings: string[] = [...compatibility.warnings];
+  let incCount = 0;
+  let decCount = 0;
+  let sigInc = 0;
+  let sigDec = 0;
+  let absSum = 0;
+  let validOverlap = 0;
+  let maxInc = 0;
+  let maxDec = 0;
 
-  if (!refEpoch.wcs || !primaryTargetRaw.wcs) {
-    dataQualityWarnings.push(
-      'WCS TAN-SIP headers missing on one or more cutouts; pixel-grid fallback alignment applied.'
-    );
-  }
-  if (!refEpoch.meta.hasVariance || !primaryTargetRaw.meta.hasVariance) {
-    dataQualityWarnings.push(
-      'VARIANCE extension unavailable on one or more cutouts; sky MAD noise floor used for uncertainty estimates.'
-    );
-  }
-  if (refEpoch.meta.validPixelFraction < 0.7 || primaryTargetRaw.meta.validPixelFraction < 0.7) {
-    dataQualityWarnings.push(
-      'Significant masked or missing detector pixels detected (>30% invalid); confidence scores reflect degraded coverage.'
-    );
-  }
+  const bgSigmaCombined = Math.hypot(baseline.meta.skyNoiseSigma, target.meta.skyNoiseSigma);
+  const bgFloorVar = (0.15 * bgSigmaCombined) ** 2;
 
-  const pairSummaries: ComparisonPairSummary[] = [];
+  for (let i = 0; i < len; i++) {
+    const fRef = baseline.flux[i];
+    const fTgt = target.flux[i];
+    const flg = baseline.flags[i] | target.flags[i];
 
-  // Helper to compute pair metrics and difference/SNR buffers
-  const analyzePair = (targetAl: AlignedEpoch) => {
-    const diff = new Float32Array(len);
-    const snr = new Float32Array(len);
-    const qualityMask = new Uint8Array(len);
-    diff.fill(Number.NaN);
-    snr.fill(Number.NaN);
-
-    const wcsShift = measureResidualShift(
-      refEpoch.cleanImage,
-      targetAl.alignedFlux,
-      width,
-      height
-    );
-    const wcsShiftArcsec = Number((wcsShift.magnitude * 6.15).toFixed(2));
-
-    let incCount = 0;
-    let decCount = 0;
-    let sigInc = 0;
-    let sigDec = 0;
-    let absSum = 0;
-    let validOverlap = 0;
-    let maxInc = 0;
-    let maxDec = 0;
-
-    // Residual sky-level uncertainty floor between the two epochs
-    const bgSigmaCombined = Math.hypot(
-      refEpoch.meta.skyNoiseSigma,
-      targetAl.epoch.meta.skyNoiseSigma
-    );
-    const bgFloorVar = (0.15 * bgSigmaCombined) ** 2;
-
-    for (let i = 0; i < len; i++) {
-      const fRef = refEpoch.cleanImage[i];
-      const fTgt = targetAl.alignedFlux[i];
-      const flg = refEpoch.flags[i] | targetAl.alignedFlags[i];
-
-      if (!Number.isFinite(fRef) || !Number.isFinite(fTgt) || (flg & HARD_BAD_MASK) !== 0) {
-        qualityMask[i] = 3; // hard masked / missing
-        continue;
-      }
-
-      if ((flg & ARTIFACT_FLAG_MASK) !== 0) {
-        qualityMask[i] = 2; // flagged artifact / transient / hot / cold
-      } else if ((flg & SOFT_FLAG_MASK) !== 0) {
-        qualityMask[i] = 1; // soft flag (dichroic / phantom)
-      } else {
-        qualityMask[i] = 0;
-      }
-
-      const d = fTgt - fRef;
-      const vCombined = Math.max(
-        refEpoch.variance[i] + targetAl.alignedVariance[i] + bgFloorVar,
-        1e-9
-      );
-      const z = d / Math.sqrt(vCombined);
-
-      diff[i] = d;
-      snr[i] = z;
-      validOverlap++;
-      absSum += Math.abs(d);
-
-      if (d > 0) {
-        incCount++;
-        if (d > maxInc) maxInc = d;
-        if (z >= 3.0) sigInc++;
-      } else if (d < 0) {
-        decCount++;
-        if (d < maxDec) maxDec = d;
-        if (z <= -3.0) sigDec++;
-      }
+    if (!Number.isFinite(fRef) || !Number.isFinite(fTgt) || (flg & HARD_BAD_MASK) !== 0) {
+      qualityMask[i] = 3;
+      continue;
     }
 
-    const calWarnings: string[] = [];
-    if (wcsShiftArcsec > 2.0) {
-      calWarnings.push(
-        `Measured residual registration offset ${wcsShiftArcsec}" (${wcsShift.magnitude} px) between epochs.`
-      );
-    }
-    if (
-      refEpoch.meta.pipelineVersionHeader !== targetAl.epoch.meta.pipelineVersionHeader &&
-      refEpoch.meta.pipelineVersionHeader !== 'Not available'
-    ) {
-      calWarnings.push(
-        `Different SSDC pipeline versions (${refEpoch.meta.pipelineVersionHeader} vs ${targetAl.epoch.meta.pipelineVersionHeader}).`
-      );
+    if ((flg & ARTIFACT_FLAG_MASK) !== 0) {
+      qualityMask[i] = 2;
+    } else if ((flg & SOFT_FLAG_MASK) !== 0) {
+      qualityMask[i] = 1;
+    } else {
+      qualityMask[i] = 0;
     }
 
-    const mjd1 = refEpoch.meta.mjdObs;
-    const mjd2 = targetAl.epoch.meta.mjdObs;
-    const deltaDays =
-      mjd1 !== null && mjd2 !== null ? Number((mjd2 - mjd1).toFixed(4)) : null;
-    const deltaHours = deltaDays !== null ? Number((deltaDays * 24).toFixed(2)) : null;
+    const d = fTgt - fRef;
+    const vCombined = Math.max(baseline.variance[i] + target.variance[i] + bgFloorVar, 1e-9);
+    const z = d / Math.sqrt(vCombined);
 
-    const summary: ComparisonPairSummary = {
-      refObsId: refEpoch.obs.obsId,
-      targetObsId: targetAl.epoch.obs.obsId,
-      refDateIso: refEpoch.meta.obsDateIso,
-      targetDateIso: targetAl.epoch.meta.obsDateIso,
-      timeDeltaHours: deltaHours,
-      timeDeltaDays: deltaDays,
-      overlapPixelCount: validOverlap,
-      overlapFraction: len > 0 ? Number((validOverlap / len).toFixed(3)) : 0,
-      wcsResidualShiftPx: wcsShift,
-      wcsResidualShiftArcsec: wcsShiftArcsec,
-      backgroundShiftMjySr: Number(
-        (targetAl.epoch.meta.skyBackgroundMedian - refEpoch.meta.skyBackgroundMedian).toFixed(5)
-      ),
-      increasedPixelCount: incCount,
-      decreasedPixelCount: decCount,
-      significantIncreasePixels: sigInc,
-      significantDecreasePixels: sigDec,
-      meanAbsChangeMjySr: validOverlap > 0 ? Number((absSum / validOverlap).toFixed(5)) : 0,
-      maxIncreaseMjySr: Number(maxInc.toFixed(5)),
-      maxDecreaseMjySr: Number(maxDec.toFixed(5)),
-      calibrationWarnings: calWarnings,
-    };
+    diff[i] = d;
+    snr[i] = z;
+    validOverlap++;
+    absSum += Math.abs(d);
 
-    return { diff, snr, qualityMask, summary };
+    if (d > 0) {
+      incCount++;
+      if (d > maxInc) maxInc = d;
+      if (z >= 3.0) sigInc++;
+    } else if (d < 0) {
+      decCount++;
+      if (d < maxDec) maxDec = d;
+      if (z <= -3.0) sigDec++;
+    }
+  }
+
+  const calWarnings: string[] = [];
+  if (wcsShiftArcsec > 2.0) {
+    calWarnings.push(
+      `Measured residual registration offset ${wcsShiftArcsec}" (${wcsShift.magnitude} px) between epochs.`
+    );
+  }
+  if (
+    baseline.meta.pipelineVersionHeader !== target.meta.pipelineVersionHeader &&
+    baseline.meta.pipelineVersionHeader !== 'Not available'
+  ) {
+    calWarnings.push(
+      `Different SSDC pipeline versions (${baseline.meta.pipelineVersionHeader} vs ${target.meta.pipelineVersionHeader}).`
+    );
+  }
+
+  const mjd1 = baseline.meta.mjdObs;
+  const mjd2 = target.meta.mjdObs;
+  const deltaDays = mjd1 !== null && mjd2 !== null ? Number((mjd2 - mjd1).toFixed(4)) : null;
+  const deltaHours = deltaDays !== null ? Number((deltaDays * 24).toFixed(2)) : null;
+
+  const summary: ComparisonPairSummary = {
+    refObsId: baseline.obs.obsId,
+    targetObsId: target.obs.obsId,
+    refDateIso: baseline.meta.obsDateIso,
+    targetDateIso: target.meta.obsDateIso,
+    timeDeltaHours: deltaHours,
+    timeDeltaDays: deltaDays,
+    overlapPixelCount: validOverlap,
+    overlapFraction: len > 0 ? Number((validOverlap / len).toFixed(3)) : 0,
+    wcsResidualShiftPx: wcsShift,
+    wcsResidualShiftArcsec: wcsShiftArcsec,
+    backgroundShiftMjySr: Number(
+      (target.meta.skyBackgroundMedian - baseline.meta.skyBackgroundMedian).toFixed(5)
+    ),
+    increasedPixelCount: incCount,
+    decreasedPixelCount: decCount,
+    significantIncreasePixels: sigInc,
+    significantDecreasePixels: sigDec,
+    meanAbsChangeMjySr: validOverlap > 0 ? Number((absSum / validOverlap).toFixed(5)) : 0,
+    maxIncreaseMjySr: Number(maxInc.toFixed(5)),
+    maxDecreaseMjySr: Number(maxDec.toFixed(5)),
+    calibrationWarnings: calWarnings,
   };
 
-  const analyzedPairs = alignedTargets.map((at) => analyzePair(at));
-  for (const p of analyzedPairs) {
-    pairSummaries.push(p.summary);
-  }
+  return { diff, snr, qualityMask, summary };
+}
 
-  const primary = analyzedPairs[analyzedPairs.length - 1];
-  const diffMap = primary.diff;
-  const snrMap = primary.snr;
-  const qualityMask = primary.qualityMask;
-  const primarySummary = primary.summary;
+/**
+ * Connected-component detection + statistical classification on any aligned pair.
+ */
+export function detectChangeRegionsBetweenAligned(options: {
+  baseline: AlignedEpochView;
+  target: AlignedEpochView;
+  pair: AnalyzedAlignedPair;
+  width: number;
+  height: number;
+  wcs: FullTanSipWcs | null;
+  multiEpochSnrMaps?: Float32Array[];
+  maxRegions?: number;
+}): DetectedChangeRegion[] {
+  const { baseline, target, pair, width, height, wcs, multiEpochSnrMaps } = options;
+  const len = width * height;
+  const diffMap = pair.diff;
+  const snrMap = pair.snr;
+  const primarySummary = pair.summary;
 
-  if (primarySummary.overlapFraction < 0.3) {
-    dataQualityWarnings.push(
-      `Low spatial overlap (${(primarySummary.overlapFraction * 100).toFixed(1)}%) between ${refEpoch.obs.obsId} and ${primaryTargetRaw.obs.obsId}.`
-    );
-  }
-
-  // 3. Connected-component change detection on |Z| >= 3.2 sigma (seed >= 3.8 sigma)
   const visited = new Uint8Array(len);
   const candidateRegions: DetectedChangeRegion[] = [];
 
@@ -871,7 +841,6 @@ export async function runSpaceComparison(options: {
       const startZ = snrMap[startIdx];
       if (!Number.isFinite(startZ) || Math.abs(startZ) < 3.8) continue;
 
-      // BFS flood-fill connected component above 2.8 sigma
       const queue: number[] = [startIdx];
       visited[startIdx] = 1;
       const compPixels: number[] = [];
@@ -899,7 +868,6 @@ export async function runSpaceComparison(options: {
         }
       }
 
-      // Compute region photometry, centroid, flags, morphology, and dipole checks
       let xMin = width;
       let xMax = 0;
       let yMin = height;
@@ -939,12 +907,12 @@ export async function runSpaceComparison(options: {
         }
 
         integratedDiff += d;
-        const vPix = refEpoch.variance[idx] + primaryAligned.alignedVariance[idx];
+        const vPix = baseline.variance[idx] + target.variance[idx];
         integratedVar += Number.isFinite(vPix) ? vPix : 0;
-        refFluxSum += refEpoch.cleanImage[idx];
-        tgtFluxSum += primaryAligned.alignedFlux[idx];
+        refFluxSum += baseline.flux[idx];
+        tgtFluxSum += target.flux[idx];
 
-        const flg = refEpoch.flags[idx] | primaryAligned.alignedFlags[idx];
+        const flg = baseline.flags[idx] | target.flags[idx];
         combinedFlags |= flg;
         if ((flg & (ARTIFACT_FLAG_MASK | HARD_BAD_MASK)) !== 0) {
           flaggedPixelCount++;
@@ -954,7 +922,6 @@ export async function runSpaceComparison(options: {
       const cx = Math.round(sumWeight > 0 ? sumX / sumWeight : sx);
       const cy = Math.round(sumWeight > 0 ? sumY / sumWeight : sy);
 
-      // Check local neighborhood (+-3 px) for opposing dipole signature (alignment residual)
       let posNeighborhood = 0;
       let negNeighborhood = 0;
       for (let ny = Math.max(0, cy - 3); ny <= Math.min(height - 1, cy + 3); ny++) {
@@ -978,22 +945,21 @@ export async function runSpaceComparison(options: {
       const uncertaintyInt = Math.sqrt(Math.max(integratedVar, 1e-9));
       const integratedSnr = integratedDiff / uncertaintyInt;
 
-      // Measure source shape in Ref and Target around (cx, cy)
       const shapeRef = measureLocalSourceShape(
-        refEpoch.cleanImage,
+        baseline.flux,
         width,
         height,
         cx,
         cy,
-        refEpoch.meta.skyNoiseSigma
+        baseline.meta.skyNoiseSigma
       );
       const shapeTgt = measureLocalSourceShape(
-        primaryAligned.alignedFlux,
+        target.flux,
         width,
         height,
         cx,
         cy,
-        primaryTargetRaw.meta.skyNoiseSigma
+        target.meta.skyNoiseSigma
       );
 
       let positionalShiftArcsec: number | null = null;
@@ -1002,7 +968,6 @@ export async function runSpaceComparison(options: {
         positionalShiftArcsec = Number((shiftPx * 6.15).toFixed(2));
       }
 
-      // Polarity determination
       let polarity: DetectedChangeRegion['polarity'] =
         integratedDiff >= 0 ? 'brightening' : 'dimming';
       if (!shapeRef.found && shapeTgt.found && integratedDiff > 0) {
@@ -1019,38 +984,32 @@ export async function runSpaceComparison(options: {
         polarity = 'mixed';
       }
 
-      // Meaningful % change only if baseline reference signal is significantly above noise floor
       const refMean = refFluxSum / compPixels.length;
       const tgtMean = tgtFluxSum / compPixels.length;
-      const minBaseline = Math.max(refEpoch.meta.skyNoiseSigma * 3, 0.005);
+      const minBaseline = Math.max(baseline.meta.skyNoiseSigma * 3, 0.005);
       const percentChange =
         Math.abs(refMean) >= minBaseline
           ? Number((((tgtMean - refMean) / Math.abs(refMean)) * 100).toFixed(1))
           : null;
 
-      const skyCoord = refEpoch.wcs ? pixelToSkyTanSip(refEpoch.wcs, cx, cy) : null;
+      const skyCoord = wcs ? pixelToSkyTanSip(wcs, cx, cy) : null;
       const activeFlagNames = decodeFlagNames(combinedFlags);
 
-      // Multi-epoch trend check when >= 3 images are compared
       let multiEpochSummary: string | undefined;
       let multiEpochSupportsTransientSpike = false;
-      if (analyzedPairs.length >= 2) {
-        const epochZs = analyzedPairs.map((ap) => {
-          const z = ap.snr[cy * width + cx];
+      if (multiEpochSnrMaps && multiEpochSnrMaps.length >= 2) {
+        const epochZs = multiEpochSnrMaps.map((m) => {
+          const z = m[cy * width + cx];
           return Number.isFinite(z) ? z : 0;
         });
-        multiEpochSummary = `Across ${analyzedPairs.length + 1} epochs: center Z-scores [${epochZs
+        multiEpochSummary = `Across ${multiEpochSnrMaps.length + 1} epochs: center Z-scores [${epochZs
           .map((z) => `${z >= 0 ? '+' : ''}${z.toFixed(1)}σ`)
           .join(', ')}] relative to Epoch 1.`;
-        // If middle epoch spiked sharply and final returned to 0 or vice versa
         if (Math.abs(epochZs[0]) > 4 && Math.abs(epochZs[epochZs.length - 1]) < 1.5) {
           multiEpochSupportsTransientSpike = true;
         }
       }
 
-      // =====================================================================
-      // SCIENTIFIC CLASSIFICATION & STATISTICALLY JUSTIFIED CONFIDENCE MODEL
-      // =====================================================================
       const evidence: string[] = [];
       let classification: ComparisonClassification =
         'Uncertain Difference Requiring Further Observation';
@@ -1082,8 +1041,8 @@ export async function runSpaceComparison(options: {
         !shapeRef.found &&
         !shapeTgt.found &&
         (Math.abs(primarySummary.backgroundShiftMjySr) >
-          Math.max(refEpoch.meta.skyNoiseSigma * 0.4, 0.002) ||
-          refEpoch.meta.pipelineVersionHeader !== primaryTargetRaw.meta.pipelineVersionHeader);
+          Math.max(baseline.meta.skyNoiseSigma * 0.4, 0.002) ||
+          baseline.meta.pipelineVersionHeader !== target.meta.pipelineVersionHeader);
 
       if (hasCosmicOrTransientFlag || (isSinglePixelSpike && maxAbsZ > 4.5)) {
         classification = 'Cosmic-Ray Contamination or Image Artifact';
@@ -1151,7 +1110,6 @@ export async function runSpaceComparison(options: {
         evidence.push('SPHEREx FLAGS bit 21 (SOURCE) confirms association with a cataloged sky source.');
       }
 
-      // Compute independent, statistically justified confidence scores (not forced to sum to 100%)
       let genuinePct: number | null = null;
       let artifactPct: number | null = null;
       let uncertainPct: number | null = null;
@@ -1159,20 +1117,20 @@ export async function runSpaceComparison(options: {
       let dataQualityStatus: DetectedChangeRegion['dataQualityStatus'] = 'Good';
 
       if (flaggedPixelCount > 0) dataQualityStatus = 'Flagged';
-      else if (hasQualityFlag || !refEpoch.meta.hasVariance || !primaryTargetRaw.meta.hasVariance) {
+      else if (hasQualityFlag || !baseline.meta.hasVariance || !target.meta.hasVariance) {
         dataQualityStatus = 'Degraded';
       }
 
-      if (!refEpoch.meta.hasVariance && !primaryTargetRaw.meta.hasVariance && compPixels.length < 2) {
+      if (!baseline.meta.hasVariance && !target.meta.hasVariance && compPixels.length < 2) {
         confidenceLabel = 'Insufficient evidence';
       } else {
         const baseSnrSupport = snrToStatisticalSupportPct(integratedSnr);
         let penalty = 1.0;
         if (flaggedPixelCount > 0) penalty *= 0.25;
         if (hasQualityFlag) penalty *= 0.6;
-        if (compPixels.length <= 2) penalty *= 0.55; // single/2-pixel undersampled ambiguity
+        if (compPixels.length <= 2) penalty *= 0.55;
         if (dipoleBalanceRatio >= 0.4) penalty *= 1 - Math.min(0.75, dipoleBalanceRatio * 0.7);
-        if (!refEpoch.meta.hasVariance || !primaryTargetRaw.meta.hasVariance) penalty *= 0.75;
+        if (!baseline.meta.hasVariance || !target.meta.hasVariance) penalty *= 0.75;
 
         genuinePct = Math.round(Math.min(96, Math.max(3, baseSnrSupport * penalty)));
 
@@ -1184,7 +1142,6 @@ export async function runSpaceComparison(options: {
         else if (Math.abs(integratedSnr) < 4.5) artScore = 38;
         artifactPct = Math.round(Math.min(97, Math.max(4, artScore)));
 
-        // Independent ambiguity / other explanations metric (e.g. PSF undersampling, calibration drift)
         const uncScore =
           classification === 'Uncertain Difference Requiring Further Observation'
             ? 55
@@ -1234,9 +1191,116 @@ export async function runSpaceComparison(options: {
     }
   }
 
-  // Sort candidate detections by |integratedSnr| descending, cap at top 40 most significant
   candidateRegions.sort((a, b) => Math.abs(b.integratedSnr) - Math.abs(a.integratedSnr));
-  const detectedChanges = candidateRegions.slice(0, 40);
+  return candidateRegions.slice(0, options.maxRegions ?? 40);
+}
+
+export async function runSpaceComparison(options: {
+  observations: SpherexObservation[];
+  ra: number;
+  dec: number;
+  sizeDeg?: number;
+  subtractZodi?: boolean;
+}): Promise<SpaceComparisonResult> {
+  const { observations, ra, dec } = options;
+  const sizeDeg = Math.min(Math.max(options.sizeDeg ?? 0.16, 0.08), 0.35);
+  const subtractZodi = options.subtractZodi ?? true;
+
+  const compatibility = validateComparisonCompatibility(observations, ra, dec);
+  if (!compatibility.compatible) {
+    throw new Error(compatibility.reasons.join(' '));
+  }
+
+  const orderedObs = [...observations].sort(
+    (a, b) => (a.tMinMjd ?? 0) - (b.tMinMjd ?? 0)
+  );
+
+  const loadedEpochs: LoadedEpoch[] = [];
+  for (const obs of orderedObs) {
+    loadedEpochs.push(await loadEpochForComparison(obs, ra, dec, sizeDeg, subtractZodi));
+  }
+
+  const refEpoch = loadedEpochs[0];
+  const primaryTargetRaw = loadedEpochs[loadedEpochs.length - 1];
+  const width = refEpoch.width;
+  const height = refEpoch.height;
+
+  const alignedTargets: AlignedEpoch[] = [];
+  for (let i = 1; i < loadedEpochs.length; i++) {
+    alignedTargets.push(alignEpochToReference(refEpoch, loadedEpochs[i]));
+  }
+
+  const primaryAligned = alignedTargets[alignedTargets.length - 1];
+  const dataQualityWarnings: string[] = [...compatibility.warnings];
+
+  if (!refEpoch.wcs || !primaryTargetRaw.wcs) {
+    dataQualityWarnings.push(
+      'WCS TAN-SIP headers missing on one or more cutouts; pixel-grid fallback alignment applied.'
+    );
+  }
+  if (!refEpoch.meta.hasVariance || !primaryTargetRaw.meta.hasVariance) {
+    dataQualityWarnings.push(
+      'VARIANCE extension unavailable on one or more cutouts; sky MAD noise floor used for uncertainty estimates.'
+    );
+  }
+  if (refEpoch.meta.validPixelFraction < 0.7 || primaryTargetRaw.meta.validPixelFraction < 0.7) {
+    dataQualityWarnings.push(
+      'Significant masked or missing detector pixels detected (>30% invalid); confidence scores reflect degraded coverage.'
+    );
+  }
+
+  const refView: AlignedEpochView = {
+    obs: refEpoch.obs,
+    meta: refEpoch.meta,
+    flux: refEpoch.cleanImage,
+    variance: refEpoch.variance,
+    flags: refEpoch.flags,
+  };
+
+  const analyzedPairs = alignedTargets.map((at) =>
+    analyzeAlignedPair(
+      refView,
+      {
+        obs: at.epoch.obs,
+        meta: at.epoch.meta,
+        flux: at.alignedFlux,
+        variance: at.alignedVariance,
+        flags: at.alignedFlags,
+      },
+      width,
+      height
+    )
+  );
+  const pairSummaries: ComparisonPairSummary[] = analyzedPairs.map((p) => p.summary);
+
+  const primary = analyzedPairs[analyzedPairs.length - 1];
+  const diffMap = primary.diff;
+  const snrMap = primary.snr;
+  const qualityMask = primary.qualityMask;
+  const primarySummary = primary.summary;
+
+  if (primarySummary.overlapFraction < 0.3) {
+    dataQualityWarnings.push(
+      `Low spatial overlap (${(primarySummary.overlapFraction * 100).toFixed(1)}%) between ${refEpoch.obs.obsId} and ${primaryTargetRaw.obs.obsId}.`
+    );
+  }
+
+  const detectedChanges = detectChangeRegionsBetweenAligned({
+    baseline: refView,
+    target: {
+      obs: primaryAligned.epoch.obs,
+      meta: primaryAligned.epoch.meta,
+      flux: primaryAligned.alignedFlux,
+      variance: primaryAligned.alignedVariance,
+      flags: primaryAligned.alignedFlags,
+    },
+    pair: primary,
+    width,
+    height,
+    wcs: refEpoch.wcs,
+    multiEpochSnrMaps: analyzedPairs.map((p) => p.snr),
+    maxRegions: 40,
+  });
 
   // 4. Compile 14-point Scientific Comparison Report
   const detectorSpec = SPHEREX_DETECTORS[refEpoch.obs.detector];

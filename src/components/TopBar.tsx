@@ -1,7 +1,7 @@
 import { Menu, X } from 'lucide-react';
 import { useState } from 'react';
 
-export type AppView = 'landing' | 'explorer' | 'comparison';
+export type AppView = 'landing' | 'explorer' | 'comparison' | 'timelapse';
 
 interface TopBarProps {
   activeView: AppView;
@@ -19,8 +19,8 @@ export function TopBar({ activeView, onNavigate, compareCount = 0 }: TopBarProps
 
   return (
     <header className="sticky top-0 z-40 border-b border-slate-800/80 bg-[#07090E]/95 backdrop-blur-md">
-      <div className="mx-auto flex h-16 max-w-[1440px] items-center justify-between gap-8 px-4 sm:px-6 lg:px-8">
-        {/* Zone 1: Single-line brand wordmark */}
+      <div className="mx-auto flex h-16 max-w-[1440px] items-center justify-between gap-6 px-4 sm:px-6 lg:px-8">
+        {/* Zone 1: Single-line brand wordmark (returns to landing home) */}
         <button
           type="button"
           onClick={() => handleNav('landing', 'top')}
@@ -30,18 +30,7 @@ export function TopBar({ activeView, onNavigate, compareCount = 0 }: TopBarProps
         </button>
 
         {/* Zone 2: Concise single-line navigation links */}
-        <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-300">
-          <button
-            type="button"
-            onClick={() => handleNav('landing', 'top')}
-            className={`whitespace-nowrap shrink-0 py-1 border-b-2 transition-colors cursor-pointer ${
-              activeView === 'landing'
-                ? 'border-cyan-400 text-slate-100'
-                : 'border-transparent hover:border-slate-600 hover:text-slate-100'
-            }`}
-          >
-            Home
-          </button>
+        <nav className="hidden md:flex items-center gap-5 lg:gap-6 text-sm font-medium text-slate-300">
           <button
             type="button"
             onClick={() => handleNav('explorer')}
@@ -63,6 +52,17 @@ export function TopBar({ activeView, onNavigate, compareCount = 0 }: TopBarProps
             }`}
           >
             Space Comparison{compareCount > 0 ? ` (${compareCount})` : ''}
+          </button>
+          <button
+            type="button"
+            onClick={() => handleNav('timelapse')}
+            className={`whitespace-nowrap shrink-0 py-1 border-b-2 transition-colors cursor-pointer ${
+              activeView === 'timelapse'
+                ? 'border-cyan-400 text-slate-100'
+                : 'border-transparent hover:border-slate-600 hover:text-slate-100'
+            }`}
+          >
+            Cosmic Time-Lapse
           </button>
           <button
             type="button"
@@ -124,6 +124,13 @@ export function TopBar({ activeView, onNavigate, compareCount = 0 }: TopBarProps
             className="block w-full text-left rounded-md px-3 py-2.5 text-sm font-medium text-cyan-300 hover:bg-slate-800/60"
           >
             Space Comparison{compareCount > 0 ? ` (${compareCount})` : ''}
+          </button>
+          <button
+            type="button"
+            onClick={() => handleNav('timelapse')}
+            className="block w-full text-left rounded-md px-3 py-2.5 text-sm font-medium text-cyan-300 hover:bg-slate-800/60"
+          >
+            Cosmic Time-Lapse
           </button>
           <button
             type="button"

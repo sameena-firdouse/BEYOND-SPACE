@@ -10,10 +10,11 @@ Beyond Space is a full-stack astronomical exploration platform connected directl
 - **Date Filtering**: Switch between **ALL AVAILABLE DATES** (all historical observations for the selected detector) and **PARTICULAR DATE** (filtered strictly by actual UTC exposure timestamp `t_min`).
 - **Real FITS Processing & Interactive Viewer**: Retrieves real SPHEREx Multi-Extension FITS cutouts from IRSA IBE, decodes calibrated Float32 `IMAGE` (`MJy/sr`) and `ZODI` extensions, computes WCS sky coordinates, and provides interactive pan/zoom, `Asinh`/`Linear`/`Log`/`Sqrt` stretches, colormaps, percentile clipping, zodi subtraction, raw FITS header inspection, and Original FITS / Cutout FITS / PNG downloads.
 - **Space Comparison (Cosmic Change Detector)**: Compare 2–6 compatible observations of the same sky region and detector (D1–D6) with strict compatibility validation, WCS `TAN-SIP` projection & bilinear resampling, `ZODI` + 3σ-clipped background subtraction, per-pixel variance propagation, 8-category scientific signal-vs-artifact classification via SPHEREx HDU 2 `FLAGS` bitmasks, synchronized multi-mode difference viewers, and downloadable PNG/Markdown/JSON scientific comparison reports.
+- **Cosmic Time-Lapse Video Creator**: Select multiple real observations of a single sky region and isolated detector (D1–D6), arrange them chronologically (oldest to newest) using actual archive observation timestamps (`t_min` MJD -> UTC), align frames via `TAN-SIP` WCS onto Baseline Frame 1 under one shared global `asinh` flux range (no per-frame auto-gain), play through 7 interactive visualization modes (including crossfades, animated difference maps, brightness changes, source appearance/disappearance overlays, and side-by-side comparison), inspect original FITS files from any frame, and export verified H.264 `.mp4` videos rendered via local FFmpeg.
 
 ## Free Data Access & Zero Billing Guarantee
 - Uses only public, unauthenticated NASA/IPAC IRSA SIA2 and IBE endpoints.
-- Uses open-source Node.js/TypeScript dependencies (`express`, `fast-xml-parser`, `pngjs`, built-in `node:sqlite`) with zero paid APIs or cloud billing services.
+- Uses open-source Node.js/TypeScript dependencies (`express`, `fast-xml-parser`, `pngjs`, built-in `node:sqlite`) and local FFmpeg (`/usr/bin/ffmpeg` / `ffprobe`) with zero paid APIs or cloud billing services.
 
 ## Local Development
 ```bash

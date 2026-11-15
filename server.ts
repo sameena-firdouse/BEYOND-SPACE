@@ -25,6 +25,11 @@ import {
 } from './server/fits.ts';
 import { searchSpherexArchive } from './server/irsa.ts';
 import { runSpaceComparison } from './server/compare.ts';
+import {
+  exportTimelapseMp4,
+  getExportedVideoPath,
+  prepareCosmicTimelapse,
+} from './server/timelapse.ts';
 
 const PORT = Number(process.env.PORT || 3000);
 const IS_PROD = process.env.NODE_ENV === 'production';
@@ -321,6 +326,137 @@ async function startServer() {
       const message = err instanceof Error ? err.message : 'Space Comparison analysis failed';
       return res.status(502).json({ error: message });
     }
+  });
+
+  app.post('/api/timelapse/prepare', async (req, res) => {
+    try {
+      const body = req.body as {
+        observationIds?: unknown;
+        ra?: unknown;
+        dec?: unknown;
+        radius?: unknown;
+        sizeDeg?: unknown;
+        subtractZodi?: unknown;
+        totalMatchingArchiveRecords?: unknown;
+        allowUnresolvedTimestamps?: unknown;
+      };
+
+      const ids = Array.isArray(body?.observationIds)
+        ? body.observationIds.map((v) => String(v)).filter(Boolean)
+        : [];
+
+      if (ids.length < 2) {
+        return res.status(400).json({
+          error: 'Select at least 2 SPHEREx observations to create a chronological time-lapse.',
+        });
+      }
+
+      const raParsed = parseRightAscension(String(body?.ra ?? ''));
+      const decParsed = parseDeclination(String(body?.dec ?? ''));
+      if (!raParsed.valid || raParsed.value === null || !decParsed.valid || decParsed.value === null) {
+        return res.status(400).json({
+          error: raParsed.error || decParsed.error || 'Valid RA and DEC coordinates are required.',
+        });
+      }
+
+      const radiusParsed = validateSearchRadius(String(body?.radius ?? '0.1'));
+      const radiusDeg = radiusParsed.valid && radiusParsed.value !== null ? radiusParsed.value : 0.1;
+
+      const observations: SpherexObservation[] = [];
+      for (const id of ids) {
+        const obs = getObservationById(id);
+        if (!obs) {
+          return res.status(404).json({
+            error: `Observation ${id} was not found in session index. Please run an archive search first.`,
+          });
+        }
+        observations.push(obs);
+      }
+
+      const compat = validateComparisonCompatibility(observations, raParsed.value, decParsed.value);
+      if (!compat.compatible) {
+        return res.status(400).json({
+          error: compat.reasons.join(' '),
+          compatibility: compat,
+        });
+      }
+
+      const sizeDeg = Number.isFinite(Number(body?.sizeDeg)) ? Number(body.sizeDeg) : 0.14;
+      const subtractZodi = body?.subtractZodi !== false;
+      const totalMatching = Number.isFinite(Number(body?.totalMatchingArchiveRecords))
+        ? Number(body.totalMatchingArchiveRecords)
+        : observations.length;
+
+      const result = await prepareCosmicTimelapse({
+        observations,
+        ra: raParsed.value,
+        dec: decParsed.value,
+        radiusDeg,
+        sizeDeg,
+        subtractZodi,
+        totalMatchingArchiveRecords: totalMatching,
+        allowUnresolvedTimestamps: body?.allowUnresolvedTimestamps === true,
+      });
+
+      return res.json(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Cosmic Time-Lapse preparation failed';
+      return res.status(422).json({ error: message });
+    }
+  });
+
+  app.post('/api/timelapse/export', async (req, res) => {
+    try {
+      const body = req.body as {
+        timelapseId?: unknown;
+        settings?: Record<string, unknown>;
+      };
+      const timelapseId = String(body?.timelapseId ?? '').trim();
+      if (!timelapseId) {
+        return res.status(400).json({ error: 'Missing timelapseId for MP4 video export.' });
+      }
+      const result = await exportTimelapseMp4(timelapseId, body?.settings ?? {});
+      return res.json(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'MP4 video export failed';
+      return res.status(500).json({ error: message });
+    }
+  });
+
+  app.get('/api/timelapse/video/:exportId', (req, res) => {
+    const found = getExportedVideoPath(req.params.exportId);
+    if (!found) {
+      return res.status(404).json({ error: 'Rendered MP4 video not found on disk.' });
+    }
+
+    const stat = fs.statSync(found.path);
+    const fileSize = stat.size;
+    const isDownload = req.query.download === '1' || req.query.download === 'true';
+
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Accept-Ranges', 'bytes');
+    if (isDownload) {
+      res.setHeader('Content-Disposition', `attachment; filename="${found.filename}"`);
+    }
+
+    const range = req.headers.range;
+    if (range) {
+      const parts = range.replace(/bytes=/, '').split('-');
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      if (Number.isNaN(start) || start < 0 || start >= fileSize || end >= fileSize || start > end) {
+        res.status(416).setHeader('Content-Range', `bytes */${fileSize}`);
+        return res.end();
+      }
+      const chunkSize = end - start + 1;
+      res.status(206);
+      res.setHeader('Content-Range', `bytes ${start}-${end}/${fileSize}`);
+      res.setHeader('Content-Length', String(chunkSize));
+      return fs.createReadStream(found.path, { start, end }).pipe(res);
+    }
+
+    res.setHeader('Content-Length', String(fileSize));
+    return fs.createReadStream(found.path).pipe(res);
   });
 
   if (!IS_PROD) {

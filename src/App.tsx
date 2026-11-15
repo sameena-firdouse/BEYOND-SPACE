@@ -8,6 +8,7 @@ import type {
 import { LandingPage } from './components/LandingPage';
 import { SkyExplorer } from './components/SkyExplorer';
 import { SpaceComparison } from './components/SpaceComparison';
+import { CosmicTimelapse } from './components/CosmicTimelapse';
 import { TopBar, type AppView } from './components/TopBar';
 
 export default function App() {
@@ -112,6 +113,8 @@ export default function App() {
             onClearQueue={handleClearQueue}
             latestExplorerResult={latestExplorerResult}
           />
+        ) : activeView === 'timelapse' ? (
+          <CosmicTimelapse latestExplorerResult={latestExplorerResult} />
         ) : (
           <SkyExplorer
             initialDetector={explorerConfig.detector}

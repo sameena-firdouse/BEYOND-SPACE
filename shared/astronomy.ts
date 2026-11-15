@@ -826,3 +826,194 @@ export function validateComparisonCompatibility(
   };
 }
 
+// ============================================================================
+// COSMIC TIME-LAPSE VIDEO CREATOR TYPES & CHRONOLOGICAL SORTING
+// ============================================================================
+
+export type TimelapseVisualizationMode =
+  | 'original_sequence'
+  | 'smooth_crossfade'
+  | 'before_after_transitions'
+  | 'animated_difference_map'
+  | 'brightness_change'
+  | 'source_appear_disappear'
+  | 'side_by_side_comparison';
+
+export type TimelapseAspectRatio = '16:9' | '9:16' | '1:1';
+
+export interface TimelapseCustomSettings {
+  title: string;
+  visualizationMode: TimelapseVisualizationMode;
+  aspectRatio: TimelapseAspectRatio;
+  fps: number;
+  frameDurationSec: number;
+  transitionDurationSec: number;
+  playbackSpeed: number;
+  showDates: boolean;
+  showCoordinates: boolean;
+  showDetectorInfo: boolean;
+  showAnnotations: boolean;
+  includeAmbientAudio: boolean;
+}
+
+export interface ChronologicalSortResult {
+  sorted: SpherexObservation[];
+  missingTimestamps: SpherexObservation[];
+}
+
+/**
+ * Strictly sort SPHEREx observations chronologically (oldest -> newest) using ONLY
+ * actual observation timestamps (t_min MJD or derived UTC obsDateIso).
+ * NEVER falls back to obsReleaseDate or archive upload dates.
+ */
+export function chronologicalSortObservations(
+  observations: SpherexObservation[]
+): ChronologicalSortResult {
+  const withTime: Array<{ obs: SpherexObservation; timeKey: number }> = [];
+  const missingTimestamps: SpherexObservation[] = [];
+
+  for (const obs of observations) {
+    if (obs.tMinMjd !== null && Number.isFinite(obs.tMinMjd)) {
+      withTime.push({ obs, timeKey: obs.tMinMjd });
+    } else if (obs.obsDateIso) {
+      const ms = Date.parse(obs.obsDateIso);
+      if (Number.isFinite(ms)) {
+        // Convert Unix ms back to MJD for uniform ordering
+        withTime.push({ obs, timeKey: ms / 86400000 + 40587.0 });
+      } else {
+        missingTimestamps.push(obs);
+      }
+    } else {
+      missingTimestamps.push(obs);
+    }
+  }
+
+  withTime.sort((a, b) => a.timeKey - b.timeKey);
+  return {
+    sorted: withTime.map((entry) => entry.obs),
+    missingTimestamps,
+  };
+}
+
+export function formatElapsedDuration(totalDays: number | null): string {
+  if (totalDays === null || !Number.isFinite(totalDays) || totalDays < 0) {
+    return 'Elapsed span unavailable';
+  }
+  if (totalDays < 1 / 24) {
+    const mins = Math.max(1, Math.round(totalDays * 24 * 60));
+    return `${mins} min`;
+  }
+  if (totalDays < 2) {
+    return `${(totalDays * 24).toFixed(1)} hours`;
+  }
+  if (totalDays < 60) {
+    return `${totalDays.toFixed(1)} days`;
+  }
+  return `${totalDays.toFixed(1)} days (~${(totalDays / 30.4375).toFixed(1)} months)`;
+}
+
+export interface TimelapseSkippedObservation {
+  observationId: string;
+  obsId: string;
+  reason: string;
+}
+
+export interface TimelapsePreparedFrame {
+  frameIndex: number;
+  observation: SpherexObservation;
+  epochMeta: EpochAnalysisMetadata;
+  /** Aligned to Reference Frame 0 WCS grid (Zodi + sky subtracted, MJy/sr, Float32 base64) */
+  alignedFluxFloat32Base64: string;
+  /** Quality bitmask aligned to Frame 0 (Uint8 base64: 0=clean, 1=soft, 2=artifact, 3=hard bad) */
+  qualityMaskBase64: string;
+  timeDeltaFromStartHours: number | null;
+}
+
+export interface TimelapsePairAnalysis {
+  fromFrameIndex: number;
+  toFrameIndex: number;
+  fromObsId: string;
+  toObsId: string;
+  fromDateIso: string | null;
+  toDateIso: string | null;
+  summary: ComparisonPairSummary;
+  changes: DetectedChangeRegion[];
+  /** Aligned consecutive difference (Frame[i] - Frame[i-1], Float32 base64) */
+  diffFloat32Base64: string;
+  /** Propagated Z-score significance map (sigma, Float32 base64) */
+  snrFloat32Base64: string;
+  qualityMaskBase64: string;
+}
+
+export interface TimelapseScientificSummary {
+  region: {
+    ra: number;
+    dec: number;
+    radiusDeg: number;
+    cutoutSizeDeg: number;
+  };
+  detector: DetectorSpec;
+  totalMatchingArchiveRecords: number;
+  selectedCount: number;
+  preparedFrameCount: number;
+  firstObservationDate: string | null;
+  lastObservationDate: string | null;
+  totalTimeSpanDays: number | null;
+  totalTimeSpanLabel: string;
+  spectralBands: string[];
+  observationIds: string[];
+  sharedNormalization: {
+    vmin: number;
+    vmax: number;
+    stretch: 'asinh';
+    bunit: string;
+    method: string;
+  };
+  changeSummary: {
+    totalDetectedEvents: number;
+    brighteningEvents: number;
+    dimmingEvents: number;
+    newSources: number;
+    disappearedSources: number;
+    structuralShifts: number;
+    probableArtifacts: number;
+    genuineCandidates: number;
+    uncertainEvents: number;
+    headline: string;
+  };
+  qualityAndLimitations: string[];
+  interpolationDisclaimer: string;
+}
+
+export interface TimelapsePreparationResult {
+  timelapseId: string;
+  createdAt: string;
+  width: number;
+  height: number;
+  wcs: FitsWcsInfo | null;
+  compatibility: ComparisonCompatibilityResult;
+  frames: TimelapsePreparedFrame[];
+  pairs: TimelapsePairAnalysis[];
+  skippedCorrupted: TimelapseSkippedObservation[];
+  dataQualityWarnings: string[];
+  summary: TimelapseScientificSummary;
+}
+
+export interface TimelapseExportResult {
+  exportId: string;
+  timelapseId: string;
+  videoUrl: string;
+  downloadUrl: string;
+  fileSizeBytes: number;
+  durationSec: number;
+  fps: number;
+  width: number;
+  height: number;
+  codec: string;
+  hasAudio: boolean;
+  frameCountRendered: number;
+  verifiedOnDisk: boolean;
+  createdAt: string;
+}
+
+
