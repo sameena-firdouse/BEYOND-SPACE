@@ -520,19 +520,6 @@ Your video can demonstrate:
 7. Selecting multiple observations.
 8. Generating and playing the chronological video.
 
-## 🎥 Application demo
-
-<div align="center">
-
-<!-- Add your demo GIF here -->
-
-<img src="assets/demo/beyond-space-preview.gif" alt="BEYOND SPACE application demo preview" width="95%">
-
-**BEYOND SPACE — Complete Application Walkthrough**
-
-[▶ WATCH THE FULL VIDEO DEMONSTRATION](assets/demo/beyond-space-demo.mp4)
-
-</div>
 
 **To add your video:**
 
