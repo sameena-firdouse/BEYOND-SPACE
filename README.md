@@ -305,7 +305,10 @@ The SIA2 API allows the backend to search image records using sky-position and o
 
 <!-- Replace the image path with your actual screenshot -->
 
-<img src="assets/screenshots/sky-explorer.png" alt="Sky Explorer application screenshot" width="95%">
+<img width="526" height="287" alt="image" src="https://github.com/user-attachments/assets/3710fa9c-ff5c-4e58-ad48-8e596c7cd1b3" />
+<img width="526" height="421" alt="image" src="https://github.com/user-attachments/assets/6d46f3a9-2a76-44ae-ab83-cfc660a98bb4" />
+
+
 
 **Figure 1 — Sky Explorer interface**
 
