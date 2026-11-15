@@ -408,19 +408,25 @@ If the application does not implement such a model, the output should be describ
 
 <!-- Replace with your actual screenshot -->
 
-<img src="assets/screenshots/comparison-window.png" alt="Space Comparison interface" width="95%">
+<img width="562" height="353" alt="image" src="https://github.com/user-attachments/assets/4e6d9ba3-284f-4317-a21f-03c6d3d282a8" />
 
 **Figure 2 — Image comparison interface**
 
 <br><br>
 
-<img src="assets/screenshots/difference-heatmap.png" alt="Difference heatmap output" width="95%">
+<img width="545" height="437" alt="image" src="https://github.com/user-attachments/assets/b7c7e4a9-50e5-43c3-84cc-b28995d09306" />
+
+<img width="532" height="377" alt="image" src="https://github.com/user-attachments/assets/1f2d2eda-edcb-4505-a266-297c36636fb4" />
+
+<img width="556" height="235" alt="image" src="https://github.com/user-attachments/assets/adba7264-a981-42f7-87e8-279bcbacf7b6" />
+
 
 **Figure 3 — Difference heatmap visualization**
 
 </div>
 
----
+<img width="559" height="229" alt="image" src="https://github.com/user-attachments/assets/dc8bdfe2-b3c9-47b8-972a-23ca0b83516a" />
+
 
 # 🎞️ 6. FEATURE THREE — COSMIC TIME-LAPSE
 
