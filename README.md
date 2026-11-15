@@ -501,13 +501,7 @@ Apparent changes still require scientific validation to rule out noise, calibrat
 
 <br><br>
 
-<img src="assets/screenshots/video-player.png" alt="Cosmic Time-Lapse video player" width="95%">
-
-**Figure 5 — Generated video player**
-
-</div>
-
----
+<img width="559" height="418" alt="image" src="https://github.com/user-attachments/assets/64fecd9b-ea9a-49ed-8342-5d3170948aa4" />
 
 # 🎬 7. COMPLETE APPLICATION DEMONSTRATION
 
